@@ -2,6 +2,7 @@
 class LinkCryptaContentScript {
   constructor() {
     this.autoFillManager = null;
+    this.autoCaptureService = null;
     this.isInitialized = false;
     this.messageHandlers = new Map();
   }
@@ -21,6 +22,10 @@ class LinkCryptaContentScript {
       // Initialize auto-fill manager
       this.autoFillManager = new AutoFillManager();
       this.autoFillManager.initialize();
+
+      // Initialize auto-capture service
+      this.autoCaptureService = new AutoCaptureService();
+      await this.autoCaptureService.initialize();
 
       // Setup message handlers
       this.setupMessageHandlers();
@@ -55,6 +60,9 @@ class LinkCryptaContentScript {
     this.messageHandlers.set('GET_PAGE_INFO', this.handleGetPageInfo.bind(this));
     this.messageHandlers.set('HIGHLIGHT_FORM', this.handleHighlightForm.bind(this));
     this.messageHandlers.set('EXTENSION_LOCKED', this.handleExtensionLocked.bind(this));
+    this.messageHandlers.set('TOGGLE_AUTO_CAPTURE', this.handleToggleAutoCapture.bind(this));
+    this.messageHandlers.set('GET_CAPTURED_CREDENTIALS', this.handleGetCapturedCredentials.bind(this));
+    this.messageHandlers.set('CLEAR_CAPTURED_CREDENTIALS', this.handleClearCapturedCredentials.bind(this));
   }
 
   // Handle incoming messages
@@ -263,11 +271,47 @@ class LinkCryptaContentScript {
            loginKeywords.test(body);
   }
 
+  // Handle toggle auto-capture
+  async handleToggleAutoCapture(request) {
+    if (!this.autoCaptureService) return { enabled: false };
+
+    if (request.enabled) {
+      this.autoCaptureService.enable();
+    } else {
+      this.autoCaptureService.disable();
+    }
+
+    return { enabled: request.enabled };
+  }
+
+  // Handle get captured credentials
+  async handleGetCapturedCredentials(request) {
+    if (!this.autoCaptureService) return { credentials: [] };
+
+    const credentials = await this.autoCaptureService.getCapturedCredentials();
+    return { credentials };
+  }
+
+  // Handle clear captured credentials
+  async handleClearCapturedCredentials(request) {
+    if (!this.autoCaptureService) return { cleared: false };
+
+    await this.autoCaptureService.clearCapturedCredentials();
+    return { cleared: true };
+  }
+
   // Cleanup when page unloads
   cleanup() {
     if (this.autoFillManager) {
       this.autoFillManager.formDetector.stopObserving();
       this.autoFillManager.hideSuggestions();
+    }
+    
+    if (this.autoCaptureService) {
+      // Clear any pending captures
+      this.autoCaptureService.pendingCaptures.forEach(timeoutId => {
+        clearTimeout(timeoutId);
+      });
     }
   }
 }

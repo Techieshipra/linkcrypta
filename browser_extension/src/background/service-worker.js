@@ -115,7 +115,7 @@ class BackgroundService {
   // Handle messages from content scripts and popup
   async handleMessage(request, sender, sendResponse) {
     try {
-      switch (request.action) {
+      switch (request.type || request.action) {
         case 'authenticate':
           const authResult = await this.authenticateUser();
           sendResponse(authResult);
@@ -146,8 +146,33 @@ class BackgroundService {
           sendResponse({ success: true });
           break;
 
+        case 'CREDENTIALS_CAPTURED':
+          await this.handleCredentialsCaptured(request.data);
+          sendResponse({ success: true });
+          break;
+
+        case 'FORM_DETECTED':
+          await this.handleFormDetected(request.formData);
+          sendResponse({ success: true });
+          break;
+
+        case 'CONTENT_SCRIPT_READY':
+          console.log('Content script ready on:', request.url);
+          sendResponse({ success: true });
+          break;
+
+        case 'UPDATE_AUTO_LOCK':
+          this.updateAutoLock();
+          sendResponse({ success: true });
+          break;
+
+        case 'SYNC_TO_FLUTTER_APP':
+          const syncToAppResult = await this.syncToFlutterApp();
+          sendResponse(syncToAppResult);
+          break;
+
         default:
-          sendResponse({ success: false, error: 'Unknown action: ' + request.action });
+          sendResponse({ success: false, error: 'Unknown action: ' + (request.type || request.action) });
       }
     } catch (error) {
       console.error('Error handling message:', error);
@@ -544,6 +569,261 @@ class BackgroundService {
       title: 'LinkCrypta',
       message: message
     });
+  }
+
+  // Handle captured credentials from auto-capture service
+  async handleCredentialsCaptured(captureData) {
+    try {
+      console.log('Credentials captured:', captureData);
+      
+      // Store captured credentials
+      await this.storeCapturedCredentials(captureData);
+      
+      // Sync to Flutter app if possible
+      await this.syncCapturedCredentialsToFlutterApp(captureData);
+      
+      // Show notification
+      this.showNotification(`Credentials captured for ${captureData.domain}`);
+      
+    } catch (error) {
+      console.error('Error handling captured credentials:', error);
+    }
+  }
+
+  // Handle form detection
+  async handleFormDetected(formData) {
+    try {
+      console.log('Form detected:', formData);
+      
+      // Log form detection for analytics
+      await this.logUserActivity({
+        type: 'form_detected',
+        url: formData.url,
+        domain: formData.domain,
+        confidence: formData.confidence
+      });
+      
+    } catch (error) {
+      console.error('Error handling form detection:', error);
+    }
+  }
+
+  // Store captured credentials
+  async storeCapturedCredentials(captureData) {
+    try {
+      const result = await chrome.storage.local.get(['capturedCredentials']);
+      const captures = result.capturedCredentials || [];
+      
+      // Check for duplicates
+      const isDuplicate = captures.some(existing => 
+        existing.domain === captureData.domain &&
+        existing.username === captureData.username &&
+        existing.password === captureData.password &&
+        (Date.now() - existing.timestamp) < 60000 // Within 1 minute
+      );
+
+      if (!isDuplicate) {
+        captures.push({
+          ...captureData,
+          id: this.generateId(),
+          synced: false
+        });
+
+        // Keep only last 100 captures
+        if (captures.length > 100) {
+          captures.splice(0, captures.length - 100);
+        }
+
+        await chrome.storage.local.set({ capturedCredentials: captures });
+      }
+      
+    } catch (error) {
+      console.error('Error storing captured credentials:', error);
+    }
+  }
+
+  // Sync captured credentials to Flutter app
+  async syncCapturedCredentialsToFlutterApp(captureData) {
+    try {
+      // Create a local HTTP server endpoint that Flutter app can poll
+      // This is a simplified approach - in production, you might use:
+      // 1. Native messaging
+      // 2. Local HTTP server
+      // 3. File system communication
+      // 4. WebSocket connection
+      
+      const flutterData = {
+        title: captureData.title,
+        username: captureData.username,
+        password: captureData.password,
+        url: captureData.url,
+        domain: captureData.domain,
+        favicon: captureData.favicon,
+        isRegistration: captureData.isRegistration,
+        captureType: captureData.captureType,
+        timestamp: captureData.timestamp,
+        source: 'browser_extension'
+      };
+
+      // Store in a special sync queue for Flutter app to pick up
+      await this.addToFlutterSyncQueue(flutterData);
+      
+    } catch (error) {
+      console.error('Error syncing to Flutter app:', error);
+    }
+  }
+
+  // Add to Flutter sync queue
+  async addToFlutterSyncQueue(data) {
+    try {
+      const result = await chrome.storage.local.get(['flutterSyncQueue']);
+      const queue = result.flutterSyncQueue || [];
+      
+      queue.push({
+        ...data,
+        id: this.generateId(),
+        queuedAt: Date.now(),
+        synced: false
+      });
+
+      // Keep only last 50 items in sync queue
+      if (queue.length > 50) {
+        queue.splice(0, queue.length - 50);
+      }
+
+      await chrome.storage.local.set({ flutterSyncQueue: queue });
+      
+      // Try to sync immediately via local server
+      this.tryLocalServerSync(data);
+      
+    } catch (error) {
+      console.error('Error adding to Flutter sync queue:', error);
+    }
+  }
+
+  // Try to sync via local HTTP server (if Flutter app is running)
+  async tryLocalServerSync(data) {
+    try {
+      // Try common local server ports that Flutter app might use
+      const ports = [8080, 8081, 3000, 3001, 5000];
+      
+      for (const port of ports) {
+        try {
+          console.log(`🔄 Attempting to sync to localhost:${port}`, data);
+          
+          const response = await fetch(`http://localhost:${port}/api/extension-sync`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Extension-ID': chrome.runtime.id
+            },
+            body: JSON.stringify(data)
+          });
+
+          console.log(`📡 Response status: ${response.status}`);
+          
+          if (response.ok) {
+            const responseData = await response.json();
+            console.log(`✅ Successfully synced to Flutter app on port ${port}`, responseData);
+            
+            // Mark as synced in queue
+            await this.markAsSynced(data.id);
+            return true;
+          } else {
+            const errorText = await response.text();
+            console.error(`❌ Sync failed on port ${port}: ${response.status} - ${errorText}`);
+          }
+        } catch (portError) {
+          console.error(`❌ Port ${port} error:`, portError);
+        }
+      }
+      
+      console.log('❌ Flutter app not reachable via local server');
+      return false;
+      
+    } catch (error) {
+      console.error('❌ Error trying local server sync:', error);
+      return false;
+    }
+  }
+
+  // Mark item as synced in queue
+  async markAsSynced(itemId) {
+    try {
+      const result = await chrome.storage.local.get(['flutterSyncQueue']);
+      const queue = result.flutterSyncQueue || [];
+      
+      const updatedQueue = queue.map(item => 
+        item.id === itemId ? { ...item, synced: true, syncedAt: Date.now() } : item
+      );
+
+      await chrome.storage.local.set({ flutterSyncQueue: updatedQueue });
+      
+    } catch (error) {
+      console.error('Error marking as synced:', error);
+    }
+  }
+
+  // Sync all pending data to Flutter app
+  async syncToFlutterApp() {
+    try {
+      const result = await chrome.storage.local.get(['flutterSyncQueue', 'capturedCredentials']);
+      const queue = result.flutterSyncQueue || [];
+      const captures = result.capturedCredentials || [];
+      
+      const unsyncedItems = queue.filter(item => !item.synced);
+      const unsyncedCaptures = captures.filter(capture => !capture.synced);
+      
+      let syncedCount = 0;
+      
+      // Try to sync unsynced items
+      for (const item of [...unsyncedItems, ...unsyncedCaptures]) {
+        const success = await this.tryLocalServerSync(item);
+        if (success) syncedCount++;
+      }
+      
+      return {
+        success: true,
+        message: `Synced ${syncedCount} items to Flutter app`,
+        totalPending: unsyncedItems.length + unsyncedCaptures.length
+      };
+      
+    } catch (error) {
+      console.error('Error syncing to Flutter app:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Get sync queue for Flutter app polling
+  async getSyncQueue() {
+    try {
+      const result = await chrome.storage.local.get(['flutterSyncQueue']);
+      return result.flutterSyncQueue || [];
+    } catch (error) {
+      console.error('Error getting sync queue:', error);
+      return [];
+    }
+  }
+
+  // Clear synced items from queue
+  async clearSyncedItems() {
+    try {
+      const result = await chrome.storage.local.get(['flutterSyncQueue']);
+      const queue = result.flutterSyncQueue || [];
+      
+      const unsyncedItems = queue.filter(item => !item.synced);
+      
+      await chrome.storage.local.set({ flutterSyncQueue: unsyncedItems });
+      
+      return { success: true, cleared: queue.length - unsyncedItems.length };
+      
+    } catch (error) {
+      console.error('Error clearing synced items:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   // Detect forms on current page

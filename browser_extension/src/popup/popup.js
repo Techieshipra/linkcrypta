@@ -11,6 +11,8 @@ class PopupManager {
     this.touchStartY = 0;
     this.touchStartX = 0;
     this.isScrolling = false;
+    this.autoCaptureEnabled = true;
+    this.captureStats = { today: 0, total: 0 };
     
     // Initialize
     this.init();
@@ -29,6 +31,9 @@ class PopupManager {
       
       // Check authentication status
       await this.checkAuthStatus();
+      
+      // Load auto-capture status
+      await this.loadAutoCaptureStatus();
       
       // Load data if authenticated
       if (this.isAuthenticated) {
@@ -68,6 +73,10 @@ class PopupManager {
     document.getElementById('settings-btn')?.addEventListener('click', () => this.openSettings());
     document.getElementById('sync-btn')?.addEventListener('click', () => this.handleSync());
     document.getElementById('refresh-page-btn')?.addEventListener('click', () => this.refreshPageInfo());
+    
+    // Auto-capture controls
+    document.getElementById('toggle-capture-btn')?.addEventListener('click', () => this.toggleAutoCapture());
+    document.getElementById('view-captures-btn')?.addEventListener('click', () => this.viewCapturedCredentials());
     
     // Password generator modal
     document.getElementById('close-generator-btn')?.addEventListener('click', () => this.hidePasswordGenerator());
@@ -752,6 +761,227 @@ class PopupManager {
     if (event.key === 'Enter' && event.target.id === 'search-input') {
       this.handleSearchEnter();
     }
+  }
+
+  // Auto-capture functionality
+  async toggleAutoCapture() {
+    try {
+      this.autoCaptureEnabled = !this.autoCaptureEnabled;
+      
+      // Update UI
+      this.updateAutoCaptureUI();
+      
+      // Send message to content script
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab) {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: 'TOGGLE_AUTO_CAPTURE',
+          enabled: this.autoCaptureEnabled
+        });
+      }
+      
+      // Save setting
+      await chrome.storage.sync.set({ autoCaptureEnabled: this.autoCaptureEnabled });
+      
+      this.showNotification(
+        `Auto-capture ${this.autoCaptureEnabled ? 'enabled' : 'disabled'}`,
+        'success'
+      );
+      
+    } catch (error) {
+      console.error('Error toggling auto-capture:', error);
+      this.showNotification('Failed to toggle auto-capture', 'error');
+    }
+  }
+
+  async loadAutoCaptureStatus() {
+    try {
+      // Load settings
+      const result = await chrome.storage.sync.get(['autoCaptureEnabled']);
+      this.autoCaptureEnabled = result.autoCaptureEnabled !== false;
+      
+      // Load capture statistics
+      await this.loadCaptureStats();
+      
+      // Update UI
+      this.updateAutoCaptureUI();
+      
+    } catch (error) {
+      console.error('Error loading auto-capture status:', error);
+    }
+  }
+
+  async loadCaptureStats() {
+    try {
+      const result = await chrome.storage.local.get(['capturedCredentials']);
+      const captures = result.capturedCredentials || [];
+      
+      // Calculate today's captures
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const todayCaptures = captures.filter(capture => {
+        const captureDate = new Date(capture.timestamp);
+        captureDate.setHours(0, 0, 0, 0);
+        return captureDate.getTime() === today.getTime();
+      });
+      
+      this.captureStats = {
+        today: todayCaptures.length,
+        total: captures.length
+      };
+      
+    } catch (error) {
+      console.error('Error loading capture stats:', error);
+      this.captureStats = { today: 0, total: 0 };
+    }
+  }
+
+  updateAutoCaptureUI() {
+    const indicator = document.getElementById('capture-indicator');
+    const toggleBtn = document.getElementById('toggle-capture-btn');
+    const captureCount = document.getElementById('capture-count');
+    
+    if (indicator) {
+      indicator.classList.toggle('active', this.autoCaptureEnabled);
+    }
+    
+    if (toggleBtn) {
+      toggleBtn.classList.toggle('active', this.autoCaptureEnabled);
+      toggleBtn.title = `${this.autoCaptureEnabled ? 'Disable' : 'Enable'} auto-capture`;
+    }
+    
+    if (captureCount) {
+      const count = this.captureStats.today;
+      captureCount.textContent = `${count} captured today`;
+    }
+  }
+
+  async viewCapturedCredentials() {
+    try {
+      const result = await chrome.storage.local.get(['capturedCredentials']);
+      const captures = result.capturedCredentials || [];
+      
+      if (captures.length === 0) {
+        this.showNotification('No captured credentials found', 'info');
+        return;
+      }
+      
+      // Create and show captures modal
+      this.showCapturesModal(captures);
+      
+    } catch (error) {
+      console.error('Error viewing captured credentials:', error);
+      this.showNotification('Failed to load captured credentials', 'error');
+    }
+  }
+
+  showCapturesModal(captures) {
+    // Create modal HTML
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'captures-modal';
+    
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Captured Credentials (${captures.length})</h3>
+          <button id="close-captures-btn" class="icon-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="captures-list">
+            ${captures.map(capture => `
+              <div class="capture-item">
+                <div class="capture-info">
+                  <div class="capture-domain">${capture.domain}</div>
+                  <div class="capture-username">${capture.username}</div>
+                  <div class="capture-meta">
+                    ${capture.isRegistration ? 'Registration' : 'Login'} • 
+                    ${new Date(capture.timestamp).toLocaleDateString()}
+                  </div>
+                </div>
+                <div class="capture-actions">
+                  <button class="icon-btn" onclick="popupManager.copyCaptureData('${capture.domain}')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="captures-actions">
+            <button id="clear-captures-btn" class="btn btn-secondary">Clear All</button>
+            <button id="sync-captures-btn" class="btn btn-primary">Sync to App</button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Add event listeners
+    document.getElementById('close-captures-btn').addEventListener('click', () => {
+      document.body.removeChild(modal);
+    });
+    
+    document.getElementById('clear-captures-btn').addEventListener('click', async () => {
+      await this.clearCapturedCredentials();
+      document.body.removeChild(modal);
+    });
+    
+    document.getElementById('sync-captures-btn').addEventListener('click', async () => {
+      await this.syncCapturesToApp();
+      document.body.removeChild(modal);
+    });
+    
+    // Show modal
+    setTimeout(() => modal.classList.add('active'), 10);
+  }
+
+  async clearCapturedCredentials() {
+    try {
+      await chrome.storage.local.set({ capturedCredentials: [] });
+      this.captureStats = { today: 0, total: 0 };
+      this.updateAutoCaptureUI();
+      this.showNotification('Captured credentials cleared', 'success');
+    } catch (error) {
+      console.error('Error clearing captured credentials:', error);
+      this.showNotification('Failed to clear credentials', 'error');
+    }
+  }
+
+  async syncCapturesToApp() {
+    try {
+      // Send sync message to background script
+      const response = await chrome.runtime.sendMessage({
+        type: 'SYNC_TO_FLUTTER_APP'
+      });
+      
+      if (response.success) {
+        this.showNotification(response.message || 'Sync completed', 'success');
+      } else {
+        this.showNotification(response.error || 'Sync failed', 'error');
+      }
+      
+    } catch (error) {
+      console.error('Error syncing to app:', error);
+      this.showNotification('Failed to sync to app', 'error');
+    }
+  }
+
+  copyCaptureData(domain) {
+    navigator.clipboard.writeText(domain).then(() => {
+      this.showNotification('Domain copied to clipboard', 'success');
+    }).catch(() => {
+      this.showNotification('Failed to copy domain', 'error');
+    });
   }
 }
 

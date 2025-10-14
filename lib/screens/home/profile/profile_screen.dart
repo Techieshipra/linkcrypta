@@ -12,7 +12,6 @@ import 'security_settings_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'terms_of_service_screen.dart';
 import 'about_screen.dart';
-import 'password_activity_screen.dart';
 import 'password_activity_json_screen.dart';
 import 'autofill_service_screen.dart';
 
@@ -367,20 +366,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           )),
           
           // Settings Items
-          _buildSettingsItem(
-            context,
-            icon: Icons.history_rounded,
-            title: 'Password Activity',
-            subtitle: 'View your password usage history',
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => const PasswordActivityScreen(),
-                ),
-              );
-            },
-          ),
-          
           _buildSettingsItem(
             context,
             icon: Icons.data_object_rounded,

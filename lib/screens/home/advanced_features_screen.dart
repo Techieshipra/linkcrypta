@@ -279,7 +279,7 @@ class AdvancedFeaturesScreen extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 16),
-        // Third Row: Autofill Framework
+        // Third Row: Autofill Framework + Browser Extension
         Row(
           children: [
             Expanded(
@@ -298,7 +298,19 @@ class AdvancedFeaturesScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 16),
-            Expanded(child: Container()), // Empty space for symmetry
+            Expanded(
+              child: _buildFeatureCard(
+                context,
+                'Browser Extension',
+                'Auto-capture credentials from any browser',
+                Icons.extension,
+                const Color(0xFF00BCD4),
+                () {
+                  print('Navigating to browser extension screen'); // Debug
+                  Navigator.pushNamed(context, '/browser-extension');
+                },
+              ),
+            ),
           ],
         ),
       ],

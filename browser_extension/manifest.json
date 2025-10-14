@@ -31,6 +31,7 @@
         "src/shared/crypto.js",
         "src/shared/firebase-config.js",
         "src/content/form-detector.js",
+        "src/content/auto-capture.js",
         "src/content/auto-fill.js",
         "src/content/content-script.js"
       ],

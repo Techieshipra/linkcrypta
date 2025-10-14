@@ -27,7 +27,7 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _generatePassword();
   }
 
@@ -80,9 +80,8 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
   PasswordType _getSelectedType() {
     switch (_tabController.index) {
       case 0: return PasswordType.random;
-      case 1: return PasswordType.pronounceable;
-      case 2: return PasswordType.passphrase;
-      case 3: return PasswordType.pattern;
+      case 1: return PasswordType.passphrase;
+      case 2: return PasswordType.pattern;
       default: return PasswordType.random;
     }
   }
@@ -97,7 +96,6 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
           onTap: (_) => _updateOptions(),
           tabs: const [
             Tab(text: 'Random', icon: Icon(Icons.shuffle)),
-            Tab(text: 'Pronounceable', icon: Icon(Icons.record_voice_over)),
             Tab(text: 'Passphrase', icon: Icon(Icons.text_fields)),
             Tab(text: 'Pattern', icon: Icon(Icons.pattern)),
           ],
@@ -110,7 +108,6 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
               controller: _tabController,
               children: [
                 _buildRandomTab(),
-                _buildPronounceableTab(),
                 _buildPassphraseTab(),
                 _buildPatternTab(),
               ],
@@ -138,95 +135,6 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
           _buildCharacterOptions(),
           const SizedBox(height: 16),
           _buildExclusionOptions(),
-          const SizedBox(height: 24),
-          _buildGenerateButtons(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPronounceableTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Pronounceable Password Settings',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Generates passwords that are easier to remember and pronounce',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Colors.grey.shade600,
-            ),
-          ),
-          const SizedBox(height: 16),
-          _buildLengthSlider(),
-          const SizedBox(height: 16),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Additional Options', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    title: const Text('Include Numbers'),
-                    subtitle: const Text('Add numbers to make it more secure'),
-                    value: _options.includeNumbers,
-                    onChanged: (value) {
-                      setState(() {
-                        _options = PasswordGenerationOptions(
-                          type: _options.type,
-                          length: _options.length,
-                          includeUppercase: _options.includeUppercase,
-                          includeLowercase: _options.includeLowercase,
-                          includeNumbers: value,
-                          includeSymbols: _options.includeSymbols,
-                          excludeSimilar: _options.excludeSimilar,
-                          excludeAmbiguous: _options.excludeAmbiguous,
-                          customPattern: _options.customPattern,
-                          wordCount: _options.wordCount,
-                          wordSeparator: _options.wordSeparator,
-                          capitalizeWords: _options.capitalizeWords,
-                          includeNumbers2: _options.includeNumbers2,
-                        );
-                      });
-                      _generatePassword();
-                    },
-                  ),
-                  SwitchListTile(
-                    title: const Text('Include Symbols'),
-                    subtitle: const Text('Add symbols for extra security'),
-                    value: _options.includeSymbols,
-                    onChanged: (value) {
-                      setState(() {
-                        _options = PasswordGenerationOptions(
-                          type: _options.type,
-                          length: _options.length,
-                          includeUppercase: _options.includeUppercase,
-                          includeLowercase: _options.includeLowercase,
-                          includeNumbers: _options.includeNumbers,
-                          includeSymbols: value,
-                          excludeSimilar: _options.excludeSimilar,
-                          excludeAmbiguous: _options.excludeAmbiguous,
-                          customPattern: _options.customPattern,
-                          wordCount: _options.wordCount,
-                          wordSeparator: _options.wordSeparator,
-                          capitalizeWords: _options.capitalizeWords,
-                          includeNumbers2: _options.includeNumbers2,
-                        );
-                      });
-                      _generatePassword();
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
           const SizedBox(height: 24),
           _buildGenerateButtons(),
         ],
@@ -765,6 +673,11 @@ class _AdvancedPasswordGeneratorScreenState extends State<AdvancedPasswordGenera
               onPressed: () => _copyPassword(password.password),
               icon: const Icon(Icons.copy),
               tooltip: 'Copy password',
+            ),
+            IconButton(
+              onPressed: () => Navigator.of(context).pop(password.password),
+              icon: const Icon(Icons.check),
+              tooltip: 'Use this password',
             ),
           ],
         ),

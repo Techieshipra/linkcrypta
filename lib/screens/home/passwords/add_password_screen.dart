@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../../providers/data_provider.dart';
 import '../../../utils/constants.dart';
 import '../../../utils/helpers.dart';
+import '../advanced_password_generator_screen.dart';
 
 class AddPasswordScreen extends StatefulWidget {
   const AddPasswordScreen({super.key});
@@ -82,12 +83,18 @@ class _AddPasswordScreenState extends State<AddPasswordScreen> {
     }
   }
 
-  void _generatePassword() {
-    final dataProvider = context.read<DataProvider>();
-    final generatedPassword = dataProvider.generatePassword();
-    setState(() {
-      _passwordController.text = generatedPassword;
-    });
+  void _generatePassword() async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (context) => const AdvancedPasswordGeneratorScreen(),
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty) {
+      setState(() {
+        _passwordController.text = result;
+      });
+    }
   }
 
   @override

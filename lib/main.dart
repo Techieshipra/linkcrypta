@@ -19,6 +19,7 @@ import 'screens/auth/login_screen.dart';
 import 'screens/home/profile/privacy_policy_screen.dart';
 import 'screens/home/profile/terms_of_service_screen.dart';
 import 'screens/home/profile/about_screen.dart';
+import 'screens/browser_extension_screen.dart';
 import 'utils/constants.dart';
 import 'utils/googlesign.dart';
 
@@ -63,6 +64,26 @@ class _LinkCryptaAppState extends State<LinkCryptaApp> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Initialize AutofillFrameworkService after the first frame so the
+    // Provider (DataProvider) is available in the widget tree. This will
+    // register method call handlers and sync stored passwords to the
+    // platform autofill storage so the Android AutofillService can query
+    // and request save/import actions.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        final navContext = _navigatorKey.currentContext;
+        if (navContext != null) {
+          final dataProvider = Provider.of<DataProvider>(navContext, listen: false);
+          AutofillFrameworkService.instance.initialize(dataProvider).catchError((e) {
+            print('AutofillFramework: initialize error: $e');
+          });
+        } else {
+          print('AutofillFramework: navigator context not available on init');
+        }
+      } catch (e) {
+        print('AutofillFramework: Failed to schedule initialize: $e');
+      }
+    });
   }
 
   @override
@@ -153,6 +174,7 @@ class _LinkCryptaAppState extends State<LinkCryptaApp> with WidgetsBindingObserv
           '/privacy-policy': (context) => const PrivacyPolicyScreen(),
           '/terms-of-service': (context) => const TermsOfServiceScreen(),
           '/about': (context) => const AboutScreen(),
+          '/browser-extension': (context) => const BrowserExtensionScreen(),
         },
       );
         },

@@ -97,6 +97,26 @@
         </button>
       </div>
 
+      <!-- Auto-Capture Status -->
+      <div id="auto-capture-status" class="auto-capture-status">
+        <div class="status-header">
+          <div class="status-indicator">
+            <div id="capture-indicator" class="indicator active"></div>
+            <span>Auto-Capture</span>
+          </div>
+          <button id="toggle-capture-btn" class="toggle-btn" title="Toggle auto-capture">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="1" y="5" width="22" height="14" rx="7" ry="7"></rect>
+              <circle cx="16" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+        <div class="capture-stats">
+          <span id="capture-count">0 captured today</span>
+          <button id="view-captures-btn" class="link-btn">View all</button>
+        </div>
+      </div>
+
       <!-- Content Area -->
       <div class="content">
         <!-- Passwords List -->
