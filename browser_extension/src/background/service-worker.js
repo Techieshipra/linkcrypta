@@ -27,31 +27,42 @@ class BackgroundService {
   }
 
   async initialize() {
-    if (this.isInitialized) return;
+    if (this.isInitialized) {
+      console.log('⚠️ Background service already initialized');
+      return;
+    }
 
     try {
+      console.log('🔧 Initializing background service...');
+      
       // Load auth state
       await this.loadAuthState();
+      console.log('✓ Auth state loaded');
       
       // Setup context menus
       this.setupContextMenus();
+      console.log('✓ Context menus set up');
       
       // Setup message listeners
       this.setupMessageListeners();
+      console.log('✓ Message listeners set up');
       
       // Setup auto-lock timer
       this.setupAutoLock();
+      console.log('✓ Auto-lock configured');
       
       // Setup periodic sync
       this.setupPeriodicSync();
+      console.log('✓ Periodic sync configured');
       
       // Setup command listeners
       this.setupCommandListeners();
+      console.log('✓ Command listeners set up');
       
       this.isInitialized = true;
-      console.log('Background service initialized');
+      console.log('✅ Background service initialized successfully');
     } catch (error) {
-      console.error('Background service initialization failed:', error);
+      console.error('❌ Background service initialization failed:', error);
     }
   }
 
@@ -132,7 +143,9 @@ class BackgroundService {
           break;
 
         case 'addPassword':
+          console.log('📨 Received addPassword request:', request.password);
           const saveResult = await this.savePassword(request.password);
+          console.log('📨 Save result:', saveResult);
           sendResponse(saveResult);
           break;
 
@@ -473,13 +486,33 @@ class BackgroundService {
   // Save new password
   async savePassword(passwordData) {
     try {
+      console.log('📝 Saving password:', passwordData);
+      
       const result = await chrome.storage.local.get(['passwords']);
       const passwords = result.passwords || [];
+      
+      // Validate password data
+      if (!passwordData) {
+        console.error('❌ No password data provided');
+        return { success: false, error: 'No password data provided' };
+      }
+
+      if (!passwordData.username || !passwordData.password) {
+        console.error('❌ Missing required fields (username or password)');
+        return { success: false, error: 'Username and password are required' };
+      }
       
       // Add new password
       const newPassword = {
         id: this.generateId(),
-        ...passwordData,
+        siteName: passwordData.title || passwordData.siteName || passwordData.domain || 'Untitled',
+        username: passwordData.username,
+        password: passwordData.password,
+        url: passwordData.url || '',
+        email: passwordData.email || '',
+        notes: passwordData.notes || '',
+        favicon: passwordData.favicon || '',
+        domain: passwordData.domain || '',
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -488,10 +521,20 @@ class BackgroundService {
       
       await chrome.storage.local.set({ passwords });
 
-      return { success: true, message: 'Password saved successfully' };
+      console.log('✅ Password saved successfully:', newPassword.siteName);
+      
+      // Notify popup to refresh if it's open
+      chrome.runtime.sendMessage({
+        type: 'PASSWORD_SAVED',
+        password: newPassword
+      }).catch(() => {
+        // Popup might not be open, ignore error
+      });
+
+      return { success: true, message: 'Password saved successfully', password: newPassword };
     } catch (error) {
-      console.error('Error saving password:', error);
-      return { success: false, error: 'Failed to save password' };
+      console.error('❌ Error saving password:', error);
+      return { success: false, error: `Failed to save password: ${error.message}` };
     }
   }
 
@@ -841,12 +884,22 @@ class BackgroundService {
 // Initialize background service
 const backgroundService = new BackgroundService();
 
+// Initialize immediately when service worker loads
+console.log('🚀 Background service worker script loaded');
+backgroundService.initialize().then(() => {
+  console.log('✅ Background service initialized successfully');
+}).catch((error) => {
+  console.error('❌ Background service initialization failed:', error);
+});
+
 // Chrome extension lifecycle events
 chrome.runtime.onStartup.addListener(() => {
+  console.log('🔄 Extension startup event');
   backgroundService.initialize();
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log('📦 Extension installed/updated:', details.reason);
   backgroundService.initialize();
 });
 

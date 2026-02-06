@@ -61,14 +61,19 @@ class AutoFillManager {
   extractCredentialsFromForm(formData) {
     const currentUrl = window.location.href;
     const siteName = this.extractSiteName(currentUrl);
+    const hostname = new URL(currentUrl).hostname;
     
     return {
       id: this.generateId(),
-      name: siteName,
+      title: siteName,
+      siteName: siteName,
       username: formData.username || formData.email || '',
       password: formData.password || '',
+      email: formData.email || '',
       url: currentUrl,
-      notes: `Auto-saved from ${siteName}`,
+      domain: hostname,
+      favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`,
+      notes: `Auto-saved from ${siteName} on ${new Date().toLocaleDateString()}`,
       category: 'General',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -145,18 +150,41 @@ class AutoFillManager {
 
   // Handle prompt actions
   async handlePromptAction(action, credentials, overlay) {
-    switch (action) {
-      case 'save':
-        await this.saveCredentialsToApp(credentials);
-        this.showNotification('Password saved to LinkCrypta!', 'success');
-        break;
-      case 'never':
-        this.addToNeverSaveList(credentials.url);
-        break;
-      case 'not-now':
-      case 'close':
-        // Just close
-        break;
+    try {
+      switch (action) {
+        case 'save':
+          // Update button to show saving state
+          const saveBtn = overlay.querySelector('[data-action="save"]');
+          if (saveBtn) {
+            saveBtn.textContent = 'Saving...';
+            saveBtn.disabled = true;
+          }
+          
+          await this.saveCredentialsToApp(credentials);
+          this.showNotification('Password saved to LinkCrypta!', 'success');
+          break;
+        case 'never':
+          this.addToNeverSaveList(credentials.url);
+          this.showNotification('Site added to never save list', 'info');
+          break;
+        case 'not-now':
+        case 'close':
+          // Just close
+          break;
+      }
+    } catch (error) {
+      console.error('❌ Error handling prompt action:', error);
+      this.showNotification('Failed to save password', 'error');
+      
+      // Re-enable button on error
+      const saveBtn = overlay.querySelector('[data-action="save"]');
+      if (saveBtn) {
+        saveBtn.textContent = 'Save Password';
+        saveBtn.disabled = false;
+      }
+      
+      // Don't close overlay on error so user can retry
+      return;
     }
     
     if (overlay.parentNode) {
@@ -167,15 +195,31 @@ class AutoFillManager {
   // Save credentials to VaultMate app structure
   async saveCredentialsToApp(credentials) {
     try {
+      console.log('💾 Saving credentials to app:', credentials);
+      
       // Send to background script to save using VaultMate structure
-      const response = await chrome.runtime.sendMessage({
-        action: 'addPassword',
-        password: credentials
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'addPassword',
+          password: credentials
+        }, (response) => {
+          // Check for Chrome runtime errors
+          if (chrome.runtime.lastError) {
+            console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          
+          console.log('📨 Response received:', response);
+          resolve(response);
+        });
       });
       
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to save password');
+      if (!response || !response.success) {
+        throw new Error(response?.error || 'Failed to save password');
       }
+      
+      console.log('✅ Credentials saved successfully!');
       
       // Log activity
       chrome.runtime.sendMessage({
@@ -186,10 +230,12 @@ class AutoFillManager {
           url: credentials.url,
           timestamp: Date.now()
         }
-      });
+      }).catch(err => console.log('Activity log error:', err));
+      
     } catch (error) {
-      console.error('Failed to save credentials:', error);
-      this.showNotification('Failed to save password', 'error');
+      console.error('❌ Failed to save credentials:', error);
+      this.showNotification('Failed to save password: ' + error.message, 'error');
+      throw error; // Re-throw so the calling function knows it failed
     }
   }
 

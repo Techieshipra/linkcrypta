@@ -9,6 +9,7 @@ class AutoCaptureService {
     this.registrationDetector = null;
     this.lastCaptureTime = 0;
     this.captureDelay = 1000; // Prevent duplicate captures within 1 second
+    this.capturedData = new Map(); // Track captured data to prevent duplicates
   }
 
   // Initialize auto-capture service
@@ -351,31 +352,57 @@ class AutoCaptureService {
     this.capturedData.set(captureKey, now);
 
     try {
-      // Store in extension storage
-      await this.storeCapture(captureData);
-      
-      // Send to background script
-      chrome.runtime.sendMessage({
-        type: 'CREDENTIALS_CAPTURED',
-        data: captureData
-      });
-
-      // Show notification if enabled
-      const settings = await this.getSettings();
-      if (settings.autoCaptureNotifications) {
-        this.showCaptureNotification(captureData);
-      }
-
-      console.log('Credentials captured:', {
+      console.log('🔐 Credentials detected:', {
         domain: captureData.domain,
         username: captureData.username,
         type: captureData.captureType,
         isRegistration: captureData.isRegistration
       });
 
+      // Show notification asking user if they want to save
+      const settings = await this.getSettings();
+      if (settings.autoCaptureNotifications !== false) {
+        this.showCaptureNotification(captureData);
+      }
+
+      // Store in temporary capture queue (for history/analytics)
+      await this.storeTempCapture(captureData);
+      
+      // Send to background script for logging
+      chrome.runtime.sendMessage({
+        type: 'CREDENTIALS_CAPTURED',
+        data: captureData
+      }).catch((error) => {
+        console.log('Background script not available:', error);
+      });
+
     } catch (error) {
       console.error('Error capturing credentials:', error);
     }
+  }
+
+  // Store temporary capture (not saved passwords, just detection history)
+  async storeTempCapture(captureData) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['captureHistory'], (result) => {
+        const history = result.captureHistory || [];
+        
+        // Add new capture to history
+        history.push({
+          ...captureData,
+          id: this.generateId(),
+          detected: true,
+          saved: false // Will be updated when user clicks "Save"
+        });
+
+        // Keep only last 50 captures
+        if (history.length > 50) {
+          history.splice(0, history.length - 50);
+        }
+
+        chrome.storage.local.set({ captureHistory: history }, resolve);
+      });
+    });
   }
 
   // Store capture in extension storage
@@ -403,16 +430,25 @@ class AutoCaptureService {
 
   // Show capture notification
   showCaptureNotification(captureData) {
+    // Remove any existing notification
+    const existing = document.querySelector('.linkcrypta-capture-notification');
+    if (existing) {
+      existing.remove();
+    }
+
     const notification = document.createElement('div');
     notification.className = 'linkcrypta-capture-notification';
     notification.innerHTML = `
       <div class="linkcrypta-notification-content">
         <div class="linkcrypta-notification-icon">🔐</div>
         <div class="linkcrypta-notification-text">
-          <strong>Credentials Captured</strong>
-          <br>Saved for ${captureData.domain}
+          <strong>Save Password?</strong>
+          <br><small>${captureData.domain}</small>
         </div>
-        <button class="linkcrypta-notification-close">×</button>
+        <div class="linkcrypta-notification-actions">
+          <button class="linkcrypta-save-btn" data-action="save">Save</button>
+          <button class="linkcrypta-cancel-btn" data-action="cancel">×</button>
+        </div>
       </div>
     `;
 
@@ -421,24 +457,30 @@ class AutoCaptureService {
       position: fixed;
       top: 20px;
       right: 20px;
-      background: #6C63FF;
-      color: white;
-      padding: 12px 16px;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      z-index: 10000;
+      background: white;
+      color: #333;
+      padding: 16px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+      z-index: 2147483647;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
-      max-width: 300px;
-      animation: slideIn 0.3s ease-out;
+      max-width: 320px;
+      min-width: 280px;
+      animation: slideInRight 0.3s ease-out;
+      border: 2px solid #6C63FF;
     `;
 
-    // Add animation styles
+    // Add animation and button styles
     const style = document.createElement('style');
     style.textContent = `
-      @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
+      @keyframes slideInRight {
+        from { transform: translateX(400px); opacity: 0; }
         to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes slideOutRight {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(400px); opacity: 0; }
       }
       .linkcrypta-notification-content {
         display: flex;
@@ -446,33 +488,230 @@ class AutoCaptureService {
         gap: 12px;
       }
       .linkcrypta-notification-icon {
-        font-size: 20px;
+        font-size: 24px;
+        flex-shrink: 0;
       }
-      .linkcrypta-notification-close {
+      .linkcrypta-notification-text {
+        flex: 1;
+        line-height: 1.4;
+      }
+      .linkcrypta-notification-text strong {
+        color: #1a1a1a;
+        font-size: 15px;
+      }
+      .linkcrypta-notification-text small {
+        color: #666;
+        font-size: 12px;
+      }
+      .linkcrypta-notification-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .linkcrypta-save-btn {
+        background: #6C63FF;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: background 0.2s;
+      }
+      .linkcrypta-save-btn:hover {
+        background: #5a52d5;
+      }
+      .linkcrypta-save-btn:active {
+        background: #4a42c5;
+      }
+      .linkcrypta-cancel-btn {
         background: none;
         border: none;
-        color: white;
-        font-size: 18px;
+        color: #999;
+        font-size: 24px;
         cursor: pointer;
         padding: 0;
-        margin-left: auto;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        transition: background 0.2s;
+      }
+      .linkcrypta-cancel-btn:hover {
+        background: #f0f0f0;
+        color: #666;
+      }
+      .linkcrypta-notification-saving {
+        pointer-events: none;
+        opacity: 0.6;
+      }
+      .linkcrypta-notification-success {
+        border-color: #10b981;
+      }
+      .linkcrypta-notification-error {
+        border-color: #ef4444;
       }
     `;
-    document.head.appendChild(style);
+    
+    // Check if style already exists
+    if (!document.getElementById('linkcrypta-notification-styles')) {
+      style.id = 'linkcrypta-notification-styles';
+      document.head.appendChild(style);
+    }
 
     document.body.appendChild(notification);
 
-    // Auto-remove after 5 seconds
+    // Store the capture data on the notification element
+    notification.captureData = captureData;
+
+    // Save button handler
+    notification.querySelector('.linkcrypta-save-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await this.handleSaveCredentials(notification);
+    });
+
+    // Cancel button handler
+    notification.querySelector('.linkcrypta-cancel-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.removeNotification(notification);
+    });
+
+    // Auto-remove after 15 seconds if no action taken
+    setTimeout(() => {
+      if (notification.parentNode) {
+        this.removeNotification(notification);
+      }
+    }, 15000);
+  }
+
+  // Handle save credentials button click
+  async handleSaveCredentials(notification) {
+    const saveBtn = notification.querySelector('.linkcrypta-save-btn');
+    const captureData = notification.captureData;
+    
+    if (!captureData) {
+      console.error('No capture data found');
+      this.showErrorNotification(notification, 'Failed to save');
+      return;
+    }
+
+    try {
+      // Show saving state
+      notification.classList.add('linkcrypta-notification-saving');
+      saveBtn.textContent = 'Saving...';
+      
+      console.log('💾 Saving credentials:', captureData);
+
+      // Send message to background script to save
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+          action: 'addPassword',
+          password: {
+            title: captureData.title,
+            siteName: captureData.title,
+            username: captureData.username,
+            password: captureData.password,
+            url: captureData.url,
+            domain: captureData.domain,
+            email: captureData.email || '',
+            favicon: captureData.favicon || '',
+            notes: `Auto-captured on ${new Date().toLocaleDateString()}`
+          }
+        }, (response) => {
+          // Check for Chrome runtime errors
+          if (chrome.runtime.lastError) {
+            console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          
+          console.log('📨 Response received:', response);
+          resolve(response);
+        });
+      });
+
+      console.log('💾 Save response:', response);
+
+      if (response && response.success) {
+        // Show success state
+        this.showSuccessNotification(notification, 'Saved!');
+        
+        // Remove notification after short delay
+        setTimeout(() => {
+          this.removeNotification(notification);
+        }, 2000);
+      } else {
+        throw new Error(response?.error || 'Failed to save password');
+      }
+      
+    } catch (error) {
+      console.error('❌ Error saving credentials:', error);
+      this.showErrorNotification(notification, 'Failed to save');
+      
+      // Re-enable the button after error
+      notification.classList.remove('linkcrypta-notification-saving');
+      saveBtn.textContent = 'Save';
+    }
+  }
+
+  // Show success notification
+  showSuccessNotification(notification, message) {
+    notification.classList.remove('linkcrypta-notification-saving');
+    notification.classList.add('linkcrypta-notification-success');
+    
+    const textDiv = notification.querySelector('.linkcrypta-notification-text');
+    if (textDiv) {
+      textDiv.innerHTML = `
+        <strong style="color: #10b981;">✓ ${message}</strong>
+        <br><small>Password saved successfully</small>
+      `;
+    }
+    
+    const saveBtn = notification.querySelector('.linkcrypta-save-btn');
+    if (saveBtn) {
+      saveBtn.style.background = '#10b981';
+      saveBtn.textContent = 'Saved!';
+    }
+  }
+
+  // Show error notification
+  showErrorNotification(notification, message) {
+    notification.classList.remove('linkcrypta-notification-saving');
+    notification.classList.add('linkcrypta-notification-error');
+    
+    const textDiv = notification.querySelector('.linkcrypta-notification-text');
+    if (textDiv) {
+      textDiv.innerHTML = `
+        <strong style="color: #ef4444;">✗ ${message}</strong>
+        <br><small>Please try again</small>
+      `;
+    }
+    
+    const saveBtn = notification.querySelector('.linkcrypta-save-btn');
+    if (saveBtn) {
+      saveBtn.style.background = '#ef4444';
+    }
+    
+    // Auto-remove after 3 seconds
+    setTimeout(() => {
+      if (notification.parentNode) {
+        this.removeNotification(notification);
+      }
+    }, 3000);
+  }
+
+  // Remove notification with animation
+  removeNotification(notification) {
+    notification.style.animation = 'slideOutRight 0.3s ease-in';
     setTimeout(() => {
       if (notification.parentNode) {
         notification.remove();
       }
-    }, 5000);
-
-    // Close button handler
-    notification.querySelector('.linkcrypta-notification-close').addEventListener('click', () => {
-      notification.remove();
-    });
+    }, 300);
   }
 
   // Detect registration forms
