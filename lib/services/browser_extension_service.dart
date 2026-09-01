@@ -286,7 +286,7 @@ class BrowserExtensionService {
       );
 
       // Encrypt password and save
-      final encryptedPassword = EncryptionService.encrypt(passwordEntry.password);
+      final encryptedPassword = EncryptionService.encryptString(passwordEntry.password);
       final entryToSave = passwordEntry.copyWith(password: encryptedPassword);
       
       final box = await Hive.openBox<PasswordEntry>('passwords');
@@ -324,7 +324,7 @@ class BrowserExtensionService {
         final encryptedEntry = box.getAt(i);
         if (encryptedEntry == null) continue;
         
-        final decryptedPassword = EncryptionService.decrypt(encryptedEntry.password);
+        final decryptedPassword = EncryptionService.decryptString(encryptedEntry.password);
         final entry = encryptedEntry.copyWith(password: decryptedPassword);
         
         // Check if domain matches (handle subdomains)
@@ -360,7 +360,7 @@ class BrowserExtensionService {
         updatedAt: DateTime.now(),
       );
 
-      final encryptedPassword = EncryptionService.encrypt(updatedEntry.password);
+      final encryptedPassword = EncryptionService.encryptString(updatedEntry.password);
       final encryptedEntry = updatedEntry.copyWith(password: encryptedPassword);
       
       final box = await Hive.openBox<PasswordEntry>('passwords');

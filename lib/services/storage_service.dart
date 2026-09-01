@@ -52,7 +52,7 @@ class StorageService {
   }) async {
     final now = DateTime.now();
     // Encrypt the password before storing
-    final encryptedPassword = EncryptionService.encrypt(password);
+    final encryptedPassword = EncryptionService.encryptString(password);
     final entry = PasswordEntry(
       id: _uuid.v4(),
       name: name,
@@ -101,7 +101,7 @@ class StorageService {
 
   static String decryptPassword(String encryptedPassword) {
     try {
-      return EncryptionService.decrypt(encryptedPassword);
+      return EncryptionService.decryptString(encryptedPassword);
     } catch (e) {
       // If decryption fails, return the original (for backward compatibility)
       return encryptedPassword;
