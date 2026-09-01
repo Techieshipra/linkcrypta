@@ -433,14 +433,21 @@ class AutoFillManager {
   async handlePasswordFieldFocus(passwordField) {
     if (!this.isEnabled) return;
 
-    const formData = this.getFormDataForField(passwordField);
-    if (!formData) return;
+    try {
+      const formData = this.getFormDataForField(passwordField);
+      if (!formData) return;
 
-    // Get matching credentials
-    const credentials = await this.getMatchingCredentials(window.location.href);
-    
-    if (credentials.length > 0) {
-      this.showCredentialSuggestions(passwordField, credentials);
+      // Get matching credentials
+      const credentials = await this.getMatchingCredentials(window.location.href);
+      
+      if (credentials.length > 0) {
+        this.showCredentialSuggestions(passwordField, credentials);
+      }
+    } catch (error) {
+      // Silently ignore "Extension context invalidated" — happens after extension reload
+      if (!error.message?.includes('Extension context invalidated')) {
+        console.error('Error handling password field focus:', error);
+      }
     }
   }
 
@@ -449,10 +456,16 @@ class AutoFillManager {
     const value = usernameField.value.toLowerCase();
     if (value.length < 2) return;
 
-    const credentials = await this.getMatchingCredentials(window.location.href, value);
-    
-    if (credentials.length > 0) {
-      this.showUsernameSuggestions(usernameField, credentials);
+    try {
+      const credentials = await this.getMatchingCredentials(window.location.href, value);
+      
+      if (credentials.length > 0) {
+        this.showUsernameSuggestions(usernameField, credentials);
+      }
+    } catch (error) {
+      if (!error.message?.includes('Extension context invalidated')) {
+        console.error('Error handling username input:', error);
+      }
     }
   }
 
@@ -641,17 +654,27 @@ class AutoFillManager {
   // Get matching credentials from background
   async getMatchingCredentials(url, query = '') {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        type: 'SEARCH_PASSWORDS',
-        url: url,
-        query: query
-      }, (response) => {
-        if (response && response.success) {
-          resolve(response.results || []);
-        } else {
-          resolve([]);
-        }
-      });
+      try {
+        chrome.runtime.sendMessage({
+          type: 'SEARCH_PASSWORDS',
+          url: url,
+          query: query
+        }, (response) => {
+          // Handle extension context invalidated
+          if (chrome.runtime.lastError) {
+            resolve([]);
+            return;
+          }
+          if (response && response.success) {
+            resolve(response.results || []);
+          } else {
+            resolve([]);
+          }
+        });
+      } catch (error) {
+        // Extension context invalidated — return empty
+        resolve([]);
+      }
     });
   }
 

@@ -12,6 +12,7 @@ import 'services/storage_service.dart';
 import 'services/sync_service.dart';
 import 'services/activity_log_service.dart';
 import 'services/autofill_framework_service.dart';
+import 'services/browser_extension_service.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding/onboarding_screen.dart';
@@ -42,6 +43,11 @@ void main() async {
     await StorageService.initialize();
     await SyncService.initialize();
     await ActivityLogService.initialize();
+    
+    // Auto-start Browser Extension server
+    BrowserExtensionService().startServer().catchError((e) {
+      print('Browser extension service auto-start failed: $e');
+    });
     
     runApp(const LinkCryptaApp());
   } catch (e) {

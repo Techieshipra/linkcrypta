@@ -226,17 +226,27 @@ class PopupManager {
         userId: this.currentUser?.uid
       });
       
-      if (response.success) {
+      if (response && response.success) {
         this.passwords = response.passwords || [];
         this.filteredPasswords = [...this.passwords];
         this.updatePasswordsList();
         this.updatePasswordsCount();
       } else {
-        throw new Error(response.error || 'Failed to load passwords');
+        console.warn('Load passwords response:', response);
+        this.passwords = [];
+        this.filteredPasswords = [];
+        this.updatePasswordsList();
+        this.updatePasswordsCount();
       }
     } catch (error) {
       console.error('Failed to load passwords:', error);
-      this.showNotification('Failed to load passwords', 'error');
+      this.passwords = [];
+      this.filteredPasswords = [];
+      this.updatePasswordsList();
+      this.updatePasswordsCount();
+    } finally {
+      // Always switch back to main screen
+      this.showScreen('main');
     }
   }
 
@@ -624,15 +634,17 @@ class PopupManager {
         userId: this.currentUser?.uid
       });
       
-      if (response.success) {
+      if (response && response.success) {
         await this.loadPasswords();
         this.showNotification('Sync completed successfully!', 'success');
       } else {
-        throw new Error(response.error || 'Sync failed');
+        this.showScreen('main');
+        this.showNotification(response?.error || 'Sync failed', 'error');
       }
     } catch (error) {
       console.error('Sync failed:', error);
-      this.showNotification('Sync failed', 'error');
+      this.showScreen('main');
+      this.showNotification('Sync failed: ' + error.message, 'error');
     }
   }
 

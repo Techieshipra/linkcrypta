@@ -3,11 +3,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/password_entry.dart';
 import '../services/encryption_service.dart';
 import '../services/activity_log_service.dart';
+import '../services/sync_service.dart';
 
 class BrowserExtensionService {
+  static final BrowserExtensionService _instance = BrowserExtensionService._internal();
+  factory BrowserExtensionService() => _instance;
+  BrowserExtensionService._internal();
+
   static const int _defaultPort = 8080;
   static const String _syncEndpoint = '/api/extension-sync';
   static const String _statusEndpoint = '/api/status';
@@ -288,6 +294,16 @@ class BrowserExtensionService {
       
       // Log activity
       await ActivityLogService.logPasswordCreated(passwordEntry);
+
+      // Also push to Firestore so the extension can sync
+      if (FirebaseAuth.instance.currentUser != null) {
+        try {
+          await SyncService.syncPasswordToFirebase(passwordEntry);
+          debugPrint('☁️ PUSHED TO FIRESTORE: ${data['domain']}');
+        } catch (e) {
+          debugPrint('⚠️ Firestore push failed (will sync later): $e');
+        }
+      }
 
       debugPrint('💾 SAVED NEW PASSWORD FOR: ${data['domain']} from browser extension');
       debugPrint('📝 PASSWORD ENTRY ID: ${passwordEntry.id}');

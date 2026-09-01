@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../services/firebase_auth_service.dart';
+import '../../services/sync_service.dart';
 import '../../widgets/data_restore_dialog.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -90,8 +91,19 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         }
         
-        // Navigate to home in all cases
+        // Navigate to home in all cases — but first do a bidirectional sync
         if (mounted) {
+          // Sync passwords between app and extension via Firestore
+          // Pull passwords saved from browser extension → app
+          // Push app passwords → Firestore → extension can read them
+          try {
+            await SyncService.syncFromFirebase();
+            await SyncService.syncAllToFirebase();
+            debugPrint('✅ Post-login bidirectional sync complete');
+          } catch (e) {
+            debugPrint('⚠️ Post-login sync failed (non-critical): $e');
+          }
+
           Navigator.of(context).pushReplacementNamed('/home');
         }
       } else if (mounted) {
