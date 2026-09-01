@@ -1,5 +1,7 @@
 // Background Service Worker for LinkCrypta Extension
-// Real Firebase Auth + Firestore Sync
+// Real Firebase Auth + Firestore Sync + E2EE
+
+importScripts('../shared/crypto.js');
 
 const LINKCRYPTA_CONFIG = {
   FIREBASE_API_KEY: 'AIzaSyBTNuUpu41PKYBsbPTUGGKzHVhPNw9-Pmc',
@@ -30,6 +32,10 @@ class BackgroundService {
     this.idToken = null;
     this.refreshToken = null;
     this.tokenExpiry = 0;
+    
+    // E2EE
+    this.crypto = new CryptoUtils();
+    this.sessionKey = null; // Ephemeral key stored in memory
   }
 
   async initialize() {
@@ -55,29 +61,88 @@ class BackgroundService {
     }
   }
 
+  // ─── E2EE VAULT UNLOCK ──────────────────────────────────────────
+  
+  async isVaultUnlocked() {
+    return this.sessionKey !== null;
+  }
+  
+  async unlockVault(masterPassword) {
+    if (!this.isAuthenticated || !this.currentUser) {
+      throw new Error('You must sign in before unlocking the vault.');
+    }
+    
+    const token = await this.ensureValidToken();
+    const uid = this.currentUser.uid;
+    const url = `${LINKCRYPTA_CONFIG.FIRESTORE_BASE}/users/${uid}/settings/crypto`;
+    
+    try {
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Vault not initialized. Please set up Master Password in the mobile app first.');
+      }
+      
+      const data = await response.json();
+      const base64Salt = data.fields?.salt?.stringValue;
+      const keyCheckPayload = data.fields?.keyCheck?.mapValue?.fields;
+      
+      if (!base64Salt) {
+        throw new Error('Corrupt vault settings. No salt found.');
+      }
+      
+      const saltBytes = new Uint8Array(this.crypto._base64ToArrayBuffer(base64Salt));
+      const key = await this.crypto.deriveKey(masterPassword, saltBytes);
+      
+      // Verify key if keyCheck exists
+      if (keyCheckPayload) {
+        const payload = {
+          v: parseInt(keyCheckPayload.v?.integerValue || '1'),
+          n: keyCheckPayload.n?.stringValue || '',
+          c: keyCheckPayload.c?.stringValue || ''
+        };
+        try {
+          const decryptedCheck = await this.crypto.decryptRecord(payload, key);
+          if (decryptedCheck.check !== 'VALID') throw new Error('Invalid Check Payload');
+        } catch(e) {
+          throw new Error('Incorrect Master Password. (Detail: ' + e.message + ')');
+        }
+      }
+      
+      this.sessionKey = key;
+      this.resetAutoLock();
+      
+      // Sync immediately on unlock
+      this.performSync().catch(e => console.error('Post-unlock sync failed:', e));
+      
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+  
+  lockVault() {
+    this.sessionKey = null;
+    chrome.storage.local.remove(['passwords']);
+    console.log('🔒 Vault locked and local cache cleared.');
+    return { success: true };
+  }
+
   // ─── FIREBASE AUTH ───────────────────────────────────────────────
 
   async authenticateUser() {
     try {
       console.log('🔐 Starting authentication...');
-
-      // Step 1: Get Google OAuth token via chrome.identity
-      // This uses the Google account already signed into Chrome — no separate popup needed
       let accessToken;
       try {
         accessToken = await this.getGoogleToken();
-        console.log('✅ Got Google access token');
       } catch (tokenError) {
-        console.error('❌ Google token error:', tokenError);
-        // Fallback: try launchWebAuthFlow
         accessToken = await this.getGoogleTokenViaWebFlow();
-        console.log('✅ Got Google access token via web flow');
       }
-
       if (!accessToken) throw new Error('No access token received');
 
-      // Step 2: Exchange Google token for Firebase ID token
-      console.log('🔄 Exchanging token with Firebase...');
       const firebaseResponse = await fetch(
         `${LINKCRYPTA_CONFIG.AUTH_BASE}/accounts:signInWithIdp?key=${LINKCRYPTA_CONFIG.FIREBASE_API_KEY}`,
         {
@@ -94,13 +159,10 @@ class BackgroundService {
 
       if (!firebaseResponse.ok) {
         const err = await firebaseResponse.json();
-        console.error('❌ Firebase response error:', err);
         throw new Error(err.error?.message || 'Firebase auth failed');
       }
 
       const firebaseData = await firebaseResponse.json();
-      console.log('✅ Firebase auth successful');
-
       this.idToken = firebaseData.idToken;
       this.refreshToken = firebaseData.refreshToken;
       this.tokenExpiry = Date.now() + (parseInt(firebaseData.expiresIn) * 1000);
@@ -113,7 +175,6 @@ class BackgroundService {
       };
       this.isAuthenticated = true;
 
-      // Persist auth state
       await chrome.storage.local.set({
         isAuthenticated: true,
         currentUser: this.currentUser,
@@ -122,59 +183,33 @@ class BackgroundService {
         tokenExpiry: this.tokenExpiry
       });
 
-      console.log('✅ Auth complete for:', this.currentUser.email);
-
-      // Sync passwords from Firestore after login (non-blocking)
-      this.performSync().catch(e => console.error('Post-login sync failed:', e));
-
       return { success: true, user: this.currentUser };
     } catch (error) {
-      console.error('❌ Authentication failed:', error);
       return { success: false, error: error.message };
     }
   }
 
-  // Primary: Use chrome.identity.getAuthToken (simplest, uses Chrome's signed-in account)
   async getGoogleToken() {
     return new Promise((resolve, reject) => {
       chrome.identity.getAuthToken({ interactive: true }, (token) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else if (!token) {
-          reject(new Error('No token returned'));
-        } else {
-          resolve(token);
-        }
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else if (!token) reject(new Error('No token returned'));
+        else resolve(token);
       });
     });
   }
 
-  // Fallback: Use launchWebAuthFlow (works when getAuthToken is not available)
   async getGoogleTokenViaWebFlow() {
     const clientId = await this.getOAuthClientId();
     const redirectUrl = chrome.identity.getRedirectURL();
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${clientId}&` +
-      `response_type=token&` +
-      `redirect_uri=${encodeURIComponent(redirectUrl)}&` +
-      `scope=email%20profile%20openid`;
-
-    console.log('🔗 Auth URL:', authUrl);
-    console.log('🔗 Redirect URL:', redirectUrl);
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirectUrl)}&scope=email%20profile%20openid`;
 
     const responseUrl = await new Promise((resolve, reject) => {
-      chrome.identity.launchWebAuthFlow(
-        { url: authUrl, interactive: true },
-        (url) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else {
-            resolve(url);
-          }
-        }
-      );
+      chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, (url) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(url);
+      });
     });
-
     const params = new URLSearchParams(responseUrl.replace(/.*[#?]/, ''));
     const token = params.get('access_token');
     if (!token) throw new Error('No access token in redirect URL');
@@ -182,13 +217,10 @@ class BackgroundService {
   }
 
   async getOAuthClientId() {
-    // Try to get from manifest's oauth2 config, or use the web client ID
     try {
       const manifest = chrome.runtime.getManifest();
       if (manifest.oauth2?.client_id) return manifest.oauth2.client_id;
-    } catch (e) { /* ignore */ }
-    // Fallback: use Firebase web API key based client
-    // The user should set their OAuth 2.0 Web Client ID here
+    } catch (e) { }
     return '795878816417-a5jab510h6c0nolcpcsvumt3nljao4bb.apps.googleusercontent.com';
   }
 
@@ -200,9 +232,7 @@ class BackgroundService {
   }
 
   async refreshFirebaseToken() {
-    if (!this.refreshToken) {
-      throw new Error('No refresh token — user must sign in again');
-    }
+    if (!this.refreshToken) throw new Error('No refresh token');
     try {
       const response = await fetch(
         `${LINKCRYPTA_CONFIG.TOKEN_URL}?key=${LINKCRYPTA_CONFIG.FIREBASE_API_KEY}`,
@@ -224,7 +254,6 @@ class BackgroundService {
         tokenExpiry: this.tokenExpiry
       });
     } catch (error) {
-      console.error('Token refresh failed:', error);
       this.isAuthenticated = false;
       throw error;
     }
@@ -232,24 +261,21 @@ class BackgroundService {
 
   async signOutUser() {
     try {
-      // Revoke the Google token if possible
       try {
         const result = await chrome.storage.local.get(['idToken']);
-        if (result.idToken) {
-          await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${result.idToken}`).catch(() => {});
-        }
-      } catch (e) { /* ignore */ }
+        if (result.idToken) await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${result.idToken}`).catch(() => {});
+      } catch (e) {}
 
       this.currentUser = null;
       this.isAuthenticated = false;
       this.idToken = null;
       this.refreshToken = null;
       this.tokenExpiry = 0;
+      this.sessionKey = null;
 
       await chrome.storage.local.clear();
       return { success: true };
     } catch (error) {
-      console.error('Sign out failed:', error);
       return { success: false, error: error.message };
     }
   }
@@ -265,97 +291,68 @@ class BackgroundService {
       this.refreshToken = result.refreshToken || null;
       this.tokenExpiry = result.tokenExpiry || 0;
     } catch (error) {
-      console.error('Failed to load auth state:', error);
       this.isAuthenticated = false;
     }
   }
 
-  // ─── FIRESTORE CRUD ──────────────────────────────────────────────
+  // ─── FIRESTORE CRUD (E2EE) ──────────────────────────────────────
 
   async getStoredPasswords() {
-    try {
-      if (!this.isAuthenticated || !this.currentUser) {
-        const local = await chrome.storage.local.get(['passwords']);
-        return local.passwords || [];
-      }
+    if (!this.isAuthenticated || !this.currentUser) return [];
+    if (!this.sessionKey) {
+      throw new Error('Vault is locked. Master Password required.');
+    }
 
+    try {
       const token = await this.ensureValidToken();
       const uid = this.currentUser.uid;
       const url = `${LINKCRYPTA_CONFIG.FIRESTORE_BASE}/users/${uid}/passwords`;
 
-      const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
+      const response = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
       if (!response.ok) {
-        console.warn('Firestore fetch failed, using cached passwords');
         const local = await chrome.storage.local.get(['passwords']);
         return local.passwords || [];
       }
 
       const data = await response.json();
-      const passwords = (data.documents || []).map(doc => this.firestoreDocToPassword(doc));
+      const passwords = [];
+      
+      for (const doc of (data.documents || [])) {
+        try {
+          const f = doc.fields || {};
+          if (!f.c) continue; // Skip non-encrypted legacy records if any
+          
+          const payload = {
+            v: parseInt(f.v?.integerValue || '1'),
+            n: f.n?.stringValue || '',
+            c: f.c?.stringValue || ''
+          };
+          
+          const passwordData = await this.crypto.decryptRecord(payload, this.sessionKey);
+          
+          passwords.push({
+            id: doc.id,
+            name: passwordData.name || passwordData.siteName || 'Unknown Site',
+            siteName: passwordData.siteName || passwordData.name || 'Unknown Site',
+            ...passwordData
+          });
+        } catch (e) {
+          console.warn('Failed to decrypt password record:', e);
+        }
+      }
 
-      // Cache locally for offline access
       await chrome.storage.local.set({ passwords });
       return passwords;
     } catch (error) {
-      console.error('Failed to get passwords:', error);
       const local = await chrome.storage.local.get(['passwords']);
       return local.passwords || [];
     }
   }
 
-  firestoreDocToPassword(doc) {
-    const f = doc.fields || {};
-    const getString = (field) => f[field]?.stringValue || '';
-    const getBool = (field) => f[field]?.booleanValue || false;
-    const getInt = (field) => parseInt(f[field]?.integerValue || f[field]?.stringValue || '0');
-    return {
-      id: getString('id') || doc.name.split('/').pop(),
-      siteName: getString('name') || getString('siteName'),
-      name: getString('name') || getString('siteName'),
-      username: getString('username'),
-      password: getString('password'),
-      url: getString('url'),
-      email: getString('email'),
-      notes: getString('notes'),
-      category: getString('category') || 'General',
-      domain: getString('domain'),
-      favicon: getString('favicon'),
-      isFavorite: getBool('isFavorite'),
-      createdAt: getString('createdAt') || new Date().toISOString(),
-      updatedAt: getString('updatedAt') || new Date().toISOString()
-    };
-  }
-
-  passwordToFirestoreFields(password) {
-    const s = (val) => ({ stringValue: val || '' });
-    const b = (val) => ({ booleanValue: !!val });
-    return {
-      id: s(password.id),
-      name: s(password.siteName || password.name || password.title || 'Untitled'),
-      username: s(password.username),
-      password: s(password.password),
-      url: s(password.url),
-      email: s(password.email),
-      notes: s(password.notes),
-      category: s(password.category || 'General'),
-      domain: s(password.domain),
-      favicon: s(password.favicon),
-      isFavorite: b(password.isFavorite),
-      createdAt: s(password.createdAt || new Date().toISOString()),
-      updatedAt: s(new Date().toISOString()),
-      source: s('browser_extension')
-    };
-  }
-
   async savePassword(passwordData) {
+    if (!this.sessionKey) return { success: false, error: 'Vault is locked' };
+    
     try {
-      if (!passwordData || !passwordData.username || !passwordData.password) {
-        return { success: false, error: 'Username and password are required' };
-      }
-
       const newPassword = {
         id: this.generateId(),
         siteName: passwordData.title || passwordData.siteName || passwordData.domain || 'Untitled',
@@ -373,34 +370,31 @@ class BackgroundService {
         updatedAt: new Date().toISOString()
       };
 
-      // Save locally first
       const result = await chrome.storage.local.get(['passwords']);
       const passwords = result.passwords || [];
       passwords.push(newPassword);
       await chrome.storage.local.set({ passwords });
 
-      // Then save to Firestore
       if (this.isAuthenticated && this.currentUser) {
-        await this.savePasswordToFirestore(newPassword).catch(e =>
-          console.error('Firestore save failed (will retry on sync):', e)
-        );
+        await this.savePasswordToFirestore(newPassword);
       }
 
-      console.log('✅ Password saved:', newPassword.siteName);
       chrome.runtime.sendMessage({ type: 'PASSWORD_SAVED', password: newPassword }).catch(() => {});
-
       return { success: true, message: 'Password saved successfully', password: newPassword };
     } catch (error) {
-      console.error('❌ Error saving password:', error);
       return { success: false, error: error.message };
     }
   }
 
   async savePasswordToFirestore(password) {
+    if (!this.sessionKey) throw new Error('Vault is locked');
+    
     const token = await this.ensureValidToken();
     const uid = this.currentUser.uid;
     const docId = password.id;
     const url = `${LINKCRYPTA_CONFIG.FIRESTORE_BASE}/users/${uid}/passwords/${docId}`;
+    
+    const encryptedPayload = await this.crypto.encryptRecord(password, this.sessionKey);
 
     const response = await fetch(url, {
       method: 'PATCH',
@@ -408,12 +402,17 @@ class BackgroundService {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ fields: this.passwordToFirestoreFields(password) })
+      body: JSON.stringify({ 
+        fields: {
+          v: { integerValue: String(encryptedPayload.v) },
+          n: { stringValue: encryptedPayload.n },
+          c: { stringValue: encryptedPayload.c }
+        }
+      })
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Firestore save failed: ${err}`);
+      throw new Error(`Firestore save failed`);
     }
     return true;
   }
@@ -421,31 +420,21 @@ class BackgroundService {
   // ─── SYNC ────────────────────────────────────────────────────────
 
   async performSync() {
-    if (!this.isAuthenticated || !this.currentUser) {
-      return { success: false, error: 'Not authenticated' };
-    }
+    if (!this.isAuthenticated || !this.currentUser) return { success: false, error: 'Not authenticated' };
+    if (!this.sessionKey) return { success: false, error: 'Vault is locked' };
 
     try {
-      console.log('🔄 Starting sync...');
-
-      // 1. Get passwords from Firestore
       const firestorePasswords = await this.getStoredPasswords();
-
-      // 2. Get local passwords
       const localResult = await chrome.storage.local.get(['passwords']);
       const localPasswords = localResult.passwords || [];
 
-      // 3. Merge: find local passwords not in Firestore and push them
       const firestoreIds = new Set(firestorePasswords.map(p => p.id));
       const localOnly = localPasswords.filter(p => !firestoreIds.has(p.id));
 
       for (const password of localOnly) {
-        await this.savePasswordToFirestore(password).catch(e =>
-          console.error('Failed to push local password:', e)
-        );
+        await this.savePasswordToFirestore(password).catch(e => console.error(e));
       }
 
-      // 4. Update local cache with merged set
       const mergedIds = new Set();
       const merged = [];
       for (const p of [...firestorePasswords, ...localOnly]) {
@@ -454,15 +443,14 @@ class BackgroundService {
           merged.push(p);
         }
       }
+      
       await chrome.storage.local.set({
         passwords: merged,
         lastSyncTime: Date.now()
       });
 
-      console.log(`✅ Sync complete: ${merged.length} passwords`);
       return { success: true, message: `Synced ${merged.length} passwords` };
     } catch (error) {
-      console.error('❌ Sync failed:', error);
       return { success: false, error: error.message };
     }
   }
@@ -482,11 +470,23 @@ class BackgroundService {
         case 'authenticate':
           sendResponse(await this.authenticateUser());
           break;
+        case 'checkVaultState':
+          sendResponse({ isUnlocked: await this.isVaultUnlocked() });
+          break;
+        case 'unlockVault':
+          sendResponse(await this.unlockVault(request.password));
+          break;
+        case 'lockVault':
+          sendResponse(this.lockVault());
+          break;
         case 'signOut':
           sendResponse(await this.signOutUser());
           break;
         case 'getPasswords':
           sendResponse({ success: true, passwords: await this.getStoredPasswords() });
+          break;
+        case 'SEARCH_PASSWORDS':
+          sendResponse({ success: true, results: await this.getMatchingPasswords(request.url) });
           break;
         case 'addPassword':
           sendResponse(await this.savePassword(request.password));
@@ -494,284 +494,105 @@ class BackgroundService {
         case 'syncData':
           sendResponse(await this.performSync());
           break;
-        case 'logActivity':
-          await this.logUserActivity(request.activity);
-          sendResponse({ success: true });
-          break;
         case 'CREDENTIALS_CAPTURED':
-          await this.handleCredentialsCaptured(request.data, request.showOnNextPage);
+          if (request.showOnNextPage) {
+            await chrome.storage.local.set({
+              pendingCapture: {
+                data: request.data,
+                timestamp: Date.now()
+              }
+            });
+          }
           sendResponse({ success: true });
           break;
-        case 'FORM_DETECTED':
+        case 'logActivity':
           sendResponse({ success: true });
           break;
-        case 'CONTENT_SCRIPT_READY':
-          sendResponse({ success: true });
-          break;
-        case 'UPDATE_AUTO_LOCK':
-          this.resetAutoLockTimer();
-          sendResponse({ success: true });
-          break;
-        case 'SYNC_TO_FLUTTER_APP':
-          sendResponse(await this.syncToFlutterApp());
-          break;
-        case 'SEARCH_PASSWORDS': {
-          const passwords = await this.getMatchingPasswords(request.url || '');
-          sendResponse({ success: true, results: passwords });
-          break;
-        }
         default:
           sendResponse({ success: false, error: 'Unknown action' });
       }
     } catch (error) {
-      console.error('Error handling message:', error);
       sendResponse({ success: false, error: error.message });
     }
   }
 
-  // ─── CONTEXT MENUS ───────────────────────────────────────────────
+  // ─── UTILS & BACKGROUND LOGIC ────────────────────────────────────
+
+  generateId() {
+    return 'xxxx-xxxx-xxxx'.replace(/[x]/g, () => (Math.random() * 16 | 0).toString(16));
+  }
+
+  resetAutoLock() {
+    if (this.autoLockTimer) clearTimeout(this.autoLockTimer);
+    this.autoLockTimer = setTimeout(() => {
+      this.lockVault();
+    }, LINKCRYPTA_CONFIG.EXTENSION.AUTO_LOCK_TIMEOUT);
+  }
+
+  setupAutoLock() {
+    chrome.idle.setDetectionInterval(15 * 60);
+    chrome.idle.onStateChanged.addListener((state) => {
+      if (state === 'locked' || state === 'idle') {
+        this.lockVault();
+      }
+    });
+  }
+
+  setupPeriodicSync() {
+    setInterval(() => {
+      if (this.isAuthenticated && this.sessionKey) {
+        this.performSync();
+      }
+    }, LINKCRYPTA_CONFIG.EXTENSION.SYNC_INTERVAL);
+  }
 
   setupContextMenus() {
-    chrome.contextMenus.removeAll(() => {
-      chrome.contextMenus.create({
-        id: 'linkcrypta-fill-password', title: 'Fill with LinkCrypta',
-        contexts: ['editable'], documentUrlPatterns: ['http://*/*', 'https://*/*']
-      });
-      chrome.contextMenus.create({
-        id: 'linkcrypta-save-credentials', title: 'Save credentials to LinkCrypta',
-        contexts: ['page'], documentUrlPatterns: ['http://*/*', 'https://*/*']
-      });
-      chrome.contextMenus.create({
-        id: 'linkcrypta-generate-password', title: 'Generate password',
-        contexts: ['editable'], documentUrlPatterns: ['http://*/*', 'https://*/*']
-      });
-    });
-
-    if (!this._contextMenuListenerAdded) {
-      chrome.contextMenus.onClicked.addListener((info, tab) => this.handleContextMenuClick(info, tab));
-      this._contextMenuListenerAdded = true;
-    }
+    chrome.contextMenus.create({
+      id: "saveToLinkCrypta",
+      title: "Save to LinkCrypta",
+      contexts: ["page", "selection"]
+    }, () => chrome.runtime.lastError);
   }
 
-  async handleContextMenuClick(info, tab) {
-    switch (info.menuItemId) {
-      case 'linkcrypta-fill-password': await this.handleFillPassword(tab); break;
-      case 'linkcrypta-save-credentials': await this.handleSaveCredentials(tab); break;
-      case 'linkcrypta-generate-password': await this.handleGeneratePassword(tab); break;
-    }
-  }
-
-  // ─── AUTO-FILL & PASSWORD MATCHING ───────────────────────────────
-
-  async handleFillPassword(tab) {
-    if (!this.isAuthenticated) { this.showNotification('Please sign in first'); return; }
-    try {
-      const passwords = await this.getMatchingPasswords(tab.url);
-      if (passwords.length === 0) { this.showNotification('No passwords found for this site'); return; }
-      if (passwords.length === 1) {
-        await chrome.tabs.sendMessage(tab.id, { action: 'fillPassword', password: passwords[0] });
-      } else {
-        await chrome.tabs.sendMessage(tab.id, { action: 'showPasswordSelector', passwords });
+  setupCommandListeners() {
+    chrome.commands.onCommand.addListener((command) => {
+      if (command === 'fill_password' && this.isAuthenticated && this.sessionKey) {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]) this.fillPasswordForTab(tabs[0]);
+        });
       }
-    } catch (error) {
-      console.error('Error filling password:', error);
-    }
-  }
-
-  async handleSaveCredentials(tab) {
-    if (!this.isAuthenticated) { this.showNotification('Please sign in first'); return; }
-    try { await chrome.tabs.sendMessage(tab.id, { action: 'extractCredentials' }); } catch (e) { /* ignore */ }
-  }
-
-  async handleGeneratePassword(tab) {
-    try {
-      const password = this.generateRandomPassword();
-      await chrome.tabs.sendMessage(tab.id, { action: 'fillGeneratedPassword', password });
-    } catch (e) { console.error('Error generating password:', e); }
+    });
   }
 
   async getMatchingPasswords(url) {
+    if (!url || !this.sessionKey) return [];
     try {
+      const hostname = new URL(url).hostname.replace('www.', '');
       const passwords = await this.getStoredPasswords();
-      const domain = this.extractDomain(url);
       return passwords.filter(p => {
-        if (!p.url && !p.domain) return false;
-        const pDomain = this.extractDomain(p.url || p.domain || '');
-        return this.calculateDomainMatch(domain, pDomain) > LINKCRYPTA_CONFIG.AUTOFILL.CONFIDENCE_THRESHOLD;
+        if (p.url && p.url.includes(hostname)) return true;
+        if (p.siteName && p.siteName.toLowerCase().includes(hostname.split('.')[0].toLowerCase())) return true;
+        return false;
       });
-    } catch (error) {
+    } catch (e) {
       return [];
     }
   }
 
-  // ─── CREDENTIAL CAPTURE ──────────────────────────────────────────
-
-  async handleCredentialsCaptured(captureData, showOnNextPage = false) {
+  async fillPasswordForTab(tab) {
     try {
-      console.log('Credentials captured:', captureData?.domain);
-
-      // Save as a password entry
-      await this.savePassword({
-        title: captureData.title,
-        siteName: captureData.title || captureData.domain,
-        username: captureData.username,
-        password: captureData.password,
-        url: captureData.url,
-        domain: captureData.domain,
-        favicon: captureData.favicon,
-        notes: `Auto-captured from ${captureData.domain} on ${new Date().toLocaleDateString()}`
-      });
-
-      if (showOnNextPage) {
-        await chrome.storage.local.set({
-          pendingCapture: { data: captureData, timestamp: Date.now() }
-        });
+      const passwords = await this.getMatchingPasswords(tab.url);
+      if (passwords.length === 0) return;
+      if (passwords.length === 1) {
+        chrome.tabs.sendMessage(tab.id, { action: 'fillPassword', password: passwords[0] }).catch(() => {});
+      } else {
+        chrome.tabs.sendMessage(tab.id, { action: 'showPasswordSelector', passwords }).catch(() => {});
       }
-
-      // Also try local server sync (fallback for when app is running locally)
-      this.tryLocalServerSync(captureData).catch(() => {});
-    } catch (error) {
-      console.error('Error handling captured credentials:', error);
-    }
-  }
-
-  // ─── LOCAL SERVER SYNC (FALLBACK) ────────────────────────────────
-
-  async tryLocalServerSync(data) {
-    const ports = [8080, 8081, 3000, 3001, 5000];
-    for (const port of ports) {
-      try {
-        const response = await fetch(`http://localhost:${port}/api/extension-sync`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Extension-ID': chrome.runtime.id },
-          body: JSON.stringify(data)
-        });
-        if (response.ok) {
-          console.log(`✅ Synced to Flutter app on port ${port}`);
-          return true;
-        }
-      } catch (e) { /* port not available */ }
-    }
-    return false;
-  }
-
-  async syncToFlutterApp() {
-    try {
-      const result = await chrome.storage.local.get(['passwords']);
-      const passwords = result.passwords || [];
-      let synced = 0;
-      for (const p of passwords) {
-        if (await this.tryLocalServerSync(p)) synced++;
-      }
-      return { success: true, message: `Synced ${synced} items` };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  // ─── UTILITIES ───────────────────────────────────────────────────
-
-  setupCommandListeners() {
-    chrome.commands.onCommand.addListener((command) => this.handleCommand(command));
-  }
-
-  async handleCommand(command) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (command === 'open-quick-search') chrome.action.openPopup();
-    else if (command === 'auto-fill-password') await this.handleFillPassword(tab);
-  }
-
-  setupAutoLock() {
-    this.resetAutoLockTimer();
-    chrome.tabs.onActivated.addListener(() => this.resetAutoLockTimer());
-    chrome.tabs.onUpdated.addListener(() => this.resetAutoLockTimer());
-  }
-
-  resetAutoLockTimer() {
-    if (this.autoLockTimer) clearTimeout(this.autoLockTimer);
-    this.autoLockTimer = setTimeout(() => this.lockExtension(), LINKCRYPTA_CONFIG.EXTENSION.AUTO_LOCK_TIMEOUT);
-  }
-
-  async lockExtension() {
-    await chrome.storage.session?.clear?.().catch(() => {});
-    chrome.runtime.sendMessage({ type: 'EXTENSION_LOCKED' }).catch(() => {});
-  }
-
-  setupPeriodicSync() {
-    this.syncInterval = setInterval(() => {
-      if (this.isAuthenticated) this.performSync().catch(() => {});
-    }, LINKCRYPTA_CONFIG.EXTENSION.SYNC_INTERVAL);
-  }
-
-  async logUserActivity(activity) {
-    try {
-      const result = await chrome.storage.local.get(['activities']);
-      const activities = result.activities || [];
-      activities.push({ ...activity, timestamp: Date.now() });
-      if (activities.length > 100) activities.splice(0, activities.length - 100);
-      await chrome.storage.local.set({ activities });
-    } catch (e) { /* ignore */ }
-  }
-
-  extractDomain(url) {
-    try { return new URL(url).hostname.replace('www.', ''); }
-    catch { return url || ''; }
-  }
-
-  calculateDomainMatch(d1, d2) {
-    if (d1 === d2) return 1.0;
-    const p1 = d1.split('.'), p2 = d2.split('.');
-    if (p1.length > 1 && p2.length > 1) {
-      if (p1.slice(-2).join('.') === p2.slice(-2).join('.')) return 0.8;
-    }
-    return 0.0;
-  }
-
-  generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2);
-  }
-
-  generateRandomPassword(opts = {}) {
-    const { length = 16, uppercase = true, lowercase = true, numbers = true, symbols = true } = opts;
-    let charset = '';
-    if (lowercase) charset += 'abcdefghijklmnopqrstuvwxyz';
-    if (uppercase) charset += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    if (numbers) charset += '0123456789';
-    if (symbols) charset += '!@#$%^&*()_+-=[]{}|;:,.<>?';
-    if (!charset) charset = 'abcdefghijklmnopqrstuvwxyz';
-    let pw = '';
-    for (let i = 0; i < length; i++) pw += charset.charAt(Math.floor(Math.random() * charset.length));
-    return pw;
-  }
-
-  showNotification(message) {
-    chrome.notifications.create({ type: 'basic', iconUrl: '/icons/icon-48.png', title: 'LinkCrypta', message });
-  }
-
-  async detectFormsOnPage(tab) {
-    try { await chrome.tabs.sendMessage(tab.id, { type: 'DETECT_FORMS' }); }
-    catch (e) {
-      if (!e.message?.includes('Receiving end does not exist') && !e.message?.includes('Could not establish connection')) {
-        console.error('Error detecting forms:', e);
-      }
+    } catch (e) {
+      console.error(e);
     }
   }
 }
 
-// ─── INITIALIZATION ──────────────────────────────────────────────
-
 const backgroundService = new BackgroundService();
-
-console.log('🚀 Background service worker loaded');
-backgroundService.initialize().then(() => {
-  console.log('✅ Background service ready');
-}).catch(e => console.error('❌ Init failed:', e));
-
-chrome.runtime.onStartup.addListener(() => backgroundService.initialize());
-chrome.runtime.onInstalled.addListener(() => backgroundService.initialize());
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('chrome://')) {
-    setTimeout(() => backgroundService.detectFormsOnPage(tab), 500);
-  }
-});
+backgroundService.initialize();

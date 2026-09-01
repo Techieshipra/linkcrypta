@@ -37,8 +37,13 @@ class PopupManager {
       
       // Load data if authenticated
       if (this.isAuthenticated) {
-        await this.loadPasswords();
-        this.showScreen('main');
+        const vaultState = await chrome.runtime.sendMessage({ action: 'checkVaultState' });
+        if (vaultState && vaultState.isUnlocked) {
+          await this.loadPasswords();
+          this.showScreen('main');
+        } else {
+          this.showScreen('lock');
+        }
       } else {
         this.showScreen('auth');
       }
@@ -53,6 +58,12 @@ class PopupManager {
     document.getElementById('sign-in-btn')?.addEventListener('click', () => this.handleSignIn());
     document.getElementById('sign-out-btn')?.addEventListener('click', () => this.handleSignOut());
     document.getElementById('lock-btn')?.addEventListener('click', () => this.handleLock());
+    
+    // Vault Unlock
+    document.getElementById('unlock-vault-btn')?.addEventListener('click', () => this.handleVaultUnlock());
+    document.getElementById('master-password-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.handleVaultUnlock();
+    });
     
     // Search functionality
     const searchInput = document.getElementById('search-input');
@@ -179,10 +190,17 @@ class PopupManager {
       if (response.success) {
         this.isAuthenticated = true;
         this.currentUser = response.user;
-        await this.loadPasswords();
         this.updateUserInfo();
-        this.showScreen('main');
         this.showNotification('Successfully signed in!', 'success');
+        
+        // Check vault state
+        const vaultState = await chrome.runtime.sendMessage({ action: 'checkVaultState' });
+        if (vaultState && vaultState.isUnlocked) {
+          await this.loadPasswords();
+          this.showScreen('main');
+        } else {
+          this.showScreen('lock');
+        }
       } else {
         throw new Error(response.error || 'Authentication failed');
       }
@@ -209,12 +227,41 @@ class PopupManager {
   }
 
   handleLock() {
-    this.isAuthenticated = false;
+    chrome.runtime.sendMessage({ action: 'lockVault' });
     this.passwords = [];
     this.filteredPasswords = [];
-    chrome.storage.local.set({ isAuthenticated: false });
-    this.showScreen('auth');
-    this.showNotification('Extension locked', 'info');
+    this.showScreen('lock');
+    this.showNotification('Vault locked', 'info');
+  }
+
+  async handleVaultUnlock() {
+    const pwInput = document.getElementById('master-password-input');
+    const errorText = document.getElementById('unlock-error');
+    const pwd = pwInput.value.trim();
+    
+    if (!pwd) {
+      errorText.textContent = 'Please enter your Master Password.';
+      errorText.style.display = 'block';
+      return;
+    }
+    
+    this.showLoading('Unlocking Vault...');
+    errorText.style.display = 'none';
+    
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'unlockVault', password: pwd });
+      if (response.success) {
+        pwInput.value = '';
+        await this.loadPasswords();
+        this.showScreen('main');
+      } else {
+        throw new Error(response.error || 'Incorrect Master Password');
+      }
+    } catch (error) {
+      this.showScreen('lock');
+      errorText.textContent = error.message;
+      errorText.style.display = 'block';
+    }
   }
 
   async loadPasswords() {
@@ -244,9 +291,15 @@ class PopupManager {
       this.filteredPasswords = [];
       this.updatePasswordsList();
       this.updatePasswordsCount();
+      if (error.message && error.message.includes('locked')) {
+        this.showScreen('lock');
+        return;
+      }
     } finally {
-      // Always switch back to main screen
-      this.showScreen('main');
+      // Switch back to main screen if not locked
+      if (this.currentScreen === 'loading') {
+         this.showScreen('main');
+      }
     }
   }
 
@@ -293,7 +346,7 @@ class PopupManager {
           ${this.getPasswordIcon(password.siteName)}
         </div>
         <div class="password-details">
-          <div class="password-name">${this.escapeHtml(password.siteName || 'Untitled')}</div>
+          <div class="password-name">${this.escapeHtml(password.name || password.siteName || 'Untitled')}</div>
           <div class="password-username">${this.escapeHtml(password.username || 'No username')}</div>
         </div>
         <div class="password-actions">

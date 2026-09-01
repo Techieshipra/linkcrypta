@@ -17,6 +17,7 @@ import 'screens/home/home_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding/onboarding_screen.dart';
 import 'screens/auth/login_screen.dart';
+import 'screens/auth/master_password_screen.dart';
 import 'screens/home/profile/privacy_policy_screen.dart';
 import 'screens/home/profile/terms_of_service_screen.dart';
 import 'screens/home/profile/about_screen.dart';
@@ -39,7 +40,6 @@ void main() async {
     
     // Initialize services
     await GoogleSignInService.initialize();
-    await EncryptionService.initialize();
     await StorageService.initialize();
     await SyncService.initialize();
     await ActivityLogService.initialize();
@@ -176,6 +176,7 @@ class _LinkCryptaAppState extends State<LinkCryptaApp> with WidgetsBindingObserv
           '/': (context) => const SplashScreen(),
           '/onboarding': (context) => const OnboardingScreen(),
           '/login': (context) => const LoginScreen(),
+          '/master-password': (context) => const MasterPasswordScreen(),
           '/home': (context) => const HomeScreen(),
           '/privacy-policy': (context) => const PrivacyPolicyScreen(),
           '/terms-of-service': (context) => const TermsOfServiceScreen(),
