@@ -105,9 +105,9 @@ class BackgroundService {
         };
         try {
           const decryptedCheck = await this.crypto.decryptRecord(payload, key);
-          if (decryptedCheck.check !== 'VALID') throw new Error('Invalid Check');
+          if (decryptedCheck.check !== 'VALID') throw new Error('Invalid Check Payload');
         } catch(e) {
-          throw new Error('Incorrect Master Password.');
+          throw new Error('Incorrect Master Password. (Detail: ' + e.message + ')');
         }
       }
       

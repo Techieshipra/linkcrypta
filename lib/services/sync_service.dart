@@ -393,6 +393,7 @@ class SyncService {
           
           if (!exists) {
             await StorageService.addPassword(
+              id: firebasePassword.id,
               name: firebasePassword.name,
               username: firebasePassword.username,
               password: firebasePassword.password,
@@ -420,6 +421,7 @@ class SyncService {
           
           if (!exists) {
             await StorageService.addLink(
+              id: firebaseLink.id,
               title: firebaseLink.title,
               description: firebaseLink.description,
               url: firebaseLink.url,
@@ -813,6 +815,7 @@ class SyncService {
         
         if (!exists) {
           await StorageService.addPassword(
+            id: cloudPassword.id,
             name: cloudPassword.name,
             username: cloudPassword.username,
             password: cloudPassword.password,
@@ -830,6 +833,7 @@ class SyncService {
         
         if (!exists) {
           await StorageService.addLink(
+            id: cloudLink.id,
             title: cloudLink.title,
             description: cloudLink.description,
             url: cloudLink.url,

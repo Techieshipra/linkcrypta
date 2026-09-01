@@ -43,6 +43,7 @@ class StorageService {
 
   // Password Management
   static Future<PasswordEntry> addPassword({
+    String? id,
     required String name,
     required String username,
     required String password,
@@ -54,7 +55,7 @@ class StorageService {
     // Encrypt the password before storing
     final encryptedPassword = EncryptionService.encryptString(password);
     final entry = PasswordEntry(
-      id: _uuid.v4(),
+      id: id ?? _uuid.v4(),
       name: name,
       username: username,
       password: encryptedPassword, // Store encrypted password
@@ -132,6 +133,7 @@ class StorageService {
 
   // Link Management
   static Future<LinkEntry> addLink({
+    String? id,
     required String title,
     required String description,
     required String url,
@@ -139,7 +141,7 @@ class StorageService {
   }) async {
     final now = DateTime.now();
     final entry = LinkEntry(
-      id: _uuid.v4(),
+      id: id ?? _uuid.v4(),
       title: title,
       description: description,
       url: url,
