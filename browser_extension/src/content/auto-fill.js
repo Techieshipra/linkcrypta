@@ -26,10 +26,10 @@ class AutoFillManager {
       }
     });
 
-    // Listen for focus on password fields to show suggestions
+    // Listen for focus on username and password fields to show suggestions
     document.addEventListener('focus', (event) => {
-      if (this.isPasswordField(event.target)) {
-        this.handlePasswordFieldFocus(event.target);
+      if (this.isPasswordField(event.target) || this.isUsernameField(event.target)) {
+        this.handleFieldFocus(event.target);
       }
     }, true);
 
@@ -37,6 +37,16 @@ class AutoFillManager {
     document.addEventListener('input', (event) => {
       if (this.isUsernameField(event.target)) {
         this.handleUsernameInput(event.target);
+      }
+    });
+
+    // Hide suggestions when clicking outside
+    document.addEventListener('click', (event) => {
+      if (this.currentCredentialSelector && !this.currentCredentialSelector.contains(event.target)) {
+        // Don't hide if clicking on a field that will just re-trigger it
+        if (!this.isPasswordField(event.target) && !this.isUsernameField(event.target)) {
+          this.hideSuggestions();
+        }
       }
     });
   }
@@ -429,19 +439,19 @@ class AutoFillManager {
     document.head.appendChild(styles);
   }
 
-  // Handle password field focus
-  async handlePasswordFieldFocus(passwordField) {
-    if (!this.isEnabled) return;
+  // Handle field focus (username or password)
+  async handleFieldFocus(targetField) {
+    if (!this.isEnabled || this.isFilling) return;
 
     try {
-      const formData = this.getFormDataForField(passwordField);
+      const formData = this.getFormDataForField(targetField);
       if (!formData) return;
 
       // Get matching credentials
       const credentials = await this.getMatchingCredentials(window.location.href);
       
       if (credentials.length > 0) {
-        this.showCredentialSuggestions(passwordField, credentials);
+        this.showCredentialSuggestions(targetField, credentials);
       }
     } catch (error) {
       // Silently ignore "Extension context invalidated" — happens after extension reload
@@ -453,6 +463,8 @@ class AutoFillManager {
 
   // Handle username input
   async handleUsernameInput(usernameField) {
+    if (!this.isEnabled || this.isFilling) return;
+    
     const value = usernameField.value.toLowerCase();
     if (value.length < 2) return;
 
@@ -473,6 +485,7 @@ class AutoFillManager {
   async fillCredentials(credentials, formData = null) {
     if (!credentials || !this.isEnabled) return;
 
+    this.isFilling = true;
     try {
       let targetForm = formData;
       
@@ -507,6 +520,8 @@ class AutoFillManager {
     } catch (error) {
       console.error('Error filling credentials:', error);
       this.showFillError(error.message);
+    } finally {
+      this.isFilling = false;
     }
   }
 
@@ -612,19 +627,35 @@ class AutoFillManager {
 
   // Handle suggestion popup clicks
   async handleSuggestionClick(event, credentials) {
-    const target = event.target;
-    const action = target.dataset.action;
-    const index = parseInt(target.dataset.index);
+    const actionBtn = event.target.closest('[data-action]');
+    const item = event.target.closest('.linkcrypta-suggestion-item');
+    
+    let action = null;
+    let index = -1;
 
-    if (action === 'fill' && credentials[index]) {
-      await this.fillCredentials(credentials[index]);
-    } else if (action === 'copy' && credentials[index]) {
-      await this.copyToClipboard(credentials[index].password);
-      this.showCopySuccess();
-    } else if (target.classList.contains('linkcrypta-generate-btn')) {
-      await this.generateAndFillPassword();
-    } else if (target.classList.contains('linkcrypta-open-app-btn')) {
-      this.openLinkCryptaApp();
+    if (actionBtn) {
+      action = actionBtn.dataset.action;
+      index = parseInt(actionBtn.dataset.index);
+    } else if (item) {
+      // Treat clicking the entire row as a fill action
+      action = 'fill';
+      index = parseInt(item.dataset.index);
+    }
+
+    try {
+      if (action === 'fill' && credentials[index]) {
+        await this.fillCredentials(credentials[index]);
+      } else if (action === 'copy' && credentials[index]) {
+        await this.copyToClipboard(credentials[index].password);
+        this.showCopySuccess();
+      } else if (event.target.closest('.linkcrypta-generate-btn')) {
+        await this.generateAndFillPassword();
+      } else if (event.target.closest('.linkcrypta-open-app-btn')) {
+        this.openLinkCryptaApp();
+      }
+    } finally {
+      // Always hide the suggestions after any interaction
+      this.hideSuggestions();
     }
   }
 

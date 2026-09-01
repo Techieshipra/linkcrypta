@@ -699,6 +699,7 @@ class AutoCaptureService {
         chrome.runtime.sendMessage({
           action: 'addPassword',
           password: {
+            name: captureData.title,
             title: captureData.title,
             siteName: captureData.title,
             username: captureData.username,

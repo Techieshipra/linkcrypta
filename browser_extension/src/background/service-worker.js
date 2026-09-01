@@ -328,8 +328,14 @@ class BackgroundService {
             c: f.c?.stringValue || ''
           };
           
-          const plaintext = await this.crypto.decryptRecord(payload, this.sessionKey);
-          passwords.push(plaintext);
+          const passwordData = await this.crypto.decryptRecord(payload, this.sessionKey);
+          
+          passwords.push({
+            id: doc.id,
+            name: passwordData.name || passwordData.siteName || 'Unknown Site',
+            siteName: passwordData.siteName || passwordData.name || 'Unknown Site',
+            ...passwordData
+          });
         } catch (e) {
           console.warn('Failed to decrypt password record:', e);
         }
@@ -398,7 +404,7 @@ class BackgroundService {
       },
       body: JSON.stringify({ 
         fields: {
-          v: { integerValue: encryptedPayload.v },
+          v: { integerValue: String(encryptedPayload.v) },
           n: { stringValue: encryptedPayload.n },
           c: { stringValue: encryptedPayload.c }
         }
@@ -478,6 +484,9 @@ class BackgroundService {
           break;
         case 'getPasswords':
           sendResponse({ success: true, passwords: await this.getStoredPasswords() });
+          break;
+        case 'SEARCH_PASSWORDS':
+          sendResponse({ success: true, results: await this.getMatchingPasswords(request.url) });
           break;
         case 'addPassword':
           sendResponse(await this.savePassword(request.password));

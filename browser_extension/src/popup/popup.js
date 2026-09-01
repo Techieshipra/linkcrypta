@@ -346,7 +346,7 @@ class PopupManager {
           ${this.getPasswordIcon(password.siteName)}
         </div>
         <div class="password-details">
-          <div class="password-name">${this.escapeHtml(password.siteName || 'Untitled')}</div>
+          <div class="password-name">${this.escapeHtml(password.name || password.siteName || 'Untitled')}</div>
           <div class="password-username">${this.escapeHtml(password.username || 'No username')}</div>
         </div>
         <div class="password-actions">
