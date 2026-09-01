@@ -485,6 +485,17 @@ class BackgroundService {
         case 'syncData':
           sendResponse(await this.performSync());
           break;
+        case 'CREDENTIALS_CAPTURED':
+          if (request.showOnNextPage) {
+            await chrome.storage.local.set({
+              pendingCapture: {
+                data: request.data,
+                timestamp: Date.now()
+              }
+            });
+          }
+          sendResponse({ success: true });
+          break;
         case 'logActivity':
           sendResponse({ success: true });
           break;
